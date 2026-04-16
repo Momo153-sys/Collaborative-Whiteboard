@@ -129,8 +129,8 @@ const ChartTooltipContent = React.forwardRef<
     active?: boolean
     payload?: TooltipItem[]
     label?: any
-    formatter?: Function
-    labelFormatter?: Function
+    formatter?: (value: any, name: string, item: TooltipItem, index: number) => React.ReactNode
+    labelFormatter?: (label: any, payload: TooltipItem[]) => React.ReactNode
     hideLabel?: boolean
     hideIndicator?: boolean
     indicator?: "dot" | "line" | "dashed"
@@ -164,17 +164,17 @@ const ChartTooltipContent = React.forwardRef<
       item.payload?.[key] ??
       key
 
-    return config[rawKey] ?? config[key]
+    return config[rawKey];
   }
 
-  const labelNode = !hideLabel && first ? (() => {
+  const labelNode = (() => {
     const key = labelKey || first.dataKey || first.name || "value"
     const conf = getConfig(first, key)
 
     const value =
       typeof label === "string"
-        ? config[label]?.label ?? label
-        : conf?.label
+        ? config[label].label ?? label
+        : conf.label
 
     if (!value) return null
 
@@ -183,7 +183,7 @@ const ChartTooltipContent = React.forwardRef<
         {labelFormatter ? labelFormatter(value, payload) : value}
       </div>
     )
-  })() : null
+  })() 
 
   return (
     <div
@@ -223,7 +223,7 @@ const ChartTooltipContent = React.forwardRef<
 
               <div className="flex flex-1 justify-between">
                 <span className="text-muted-foreground">
-                  {conf?.label ?? item.name}
+                  {conf.label ?? item.name}
                 </span>
 
                 {item.value !== undefined && (
@@ -282,7 +282,7 @@ const ChartLegendContent = React.forwardRef<
 
         return (
           <div key={index} className="flex items-center gap-1.5">
-            {!hideIcon && conf?.icon ? (
+            {!hideIcon && conf.icon ? (
               <conf.icon />
             ) : (
               <div
@@ -291,7 +291,7 @@ const ChartLegendContent = React.forwardRef<
               />
             )}
 
-            {conf?.label ?? item.value}
+            {conf.label ?? item.value}
           </div>
         )
       })}

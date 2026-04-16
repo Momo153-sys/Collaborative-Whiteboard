@@ -1,3 +1,7 @@
+// Appwrite Document Type
+// Use this when fetching from the database
+import type {  Models } from 'appwrite';
+
 // whiteboard.ts
 
 export type Tool = 'select' | 'freehand' | 'rectangle' | 'circle' | 'eraser' | 'text';
@@ -47,16 +51,14 @@ export interface TextShape extends BaseShape {
 
 export type Shape = FreehandShape | RectangleShape | CircleShape | TextShape;
 
-// Appwrite Document Type
-// Use this when fetching from the database
-import { type Models } from 'appwrite';
+
 
 export type ShapeDocument = Shape & Models.Document;
 
 export interface CursorInfo {
   x: number;
   y: number;
-  name: string;
-  color: string;
+  userName: string;   // Changed from name
+  userColor: string;  // Changed from color
   userId: string; // Added to identify whose cursor is whose
 }
