@@ -1,15 +1,15 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import type { Tool, Shape, Point, CursorInfo } from '@/types/whiteboard';
 import { renderCanvas, hitTest, getBBForDrag, moveShape } from '@/lib/canvas-renderer';
-import { ID } from 'appwrite'; // Use Appwrite's ID generator for consistency
 
 interface WhiteboardCanvasProps {
   tool: Tool;
   strokeColor: string;
   shapes: Shape[];
-  cursors: Record<string, CursorInfo>; // Changed from Map for Appwrite compatibility
+  cursors: Record<string, CursorInfo>;
   userId: string;
-  onAddShape: (shape: Omit<Shape, 'id'>) => void; // Let the hook/Appwrite handle the ID
+  roomId: string; 
+  onAddShape: (shape: Omit<Shape, 'id'>) => void;
   onUpdateShape: (id: string, updates: Partial<Shape>) => void;
   onDeleteShape: (id: string) => void;
   onCursorMove: (x: number, y: number) => void;
@@ -21,6 +21,7 @@ export function WhiteboardCanvas({
   shapes,
   cursors,
   userId,
+  roomId,
   onAddShape,
   onUpdateShape,
   onDeleteShape,
@@ -29,52 +30,68 @@ export function WhiteboardCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
   const isDrawing = useRef(false);
+  const pointerIdRef = useRef<number | null>(null);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const previewShapeRef = useRef<Shape | null>(null);
   const startPosRef = useRef<Point>({ x: 0, y: 0 });
   const dragOffsetRef = useRef<Point>({ x: 0, y: 0 });
   const currentIdRef = useRef<string>('');
   const throttleRef = useRef(0);
-  const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean }>({ x: 0, y: 0, visible: false });
+
+  const [textInput, setTextInput] = useState<{ x: number; y: number; visible: boolean }>({
+    x: 0, y: 0, visible: false,
+  });
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Resize logic
+  // --- 1. Canvas Setup ---
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
+      const ctx = canvas.getContext('2d');
       canvas.width = window.innerWidth * dpr;
       canvas.height = window.innerHeight * dpr;
       canvas.style.width = `${window.innerWidth}px`;
       canvas.style.height = `${window.innerHeight}px`;
-      const ctx = canvas.getContext('2d');
-      if (ctx) ctx.scale(dpr, dpr);
+      if (ctx) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
+      }
     };
     resize();
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
   }, []);
 
-  // Render loop
+  // --- 2. Render Loop ---
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
+    if (!canvas || !canvas.getContext('2d')) return;
     const render = () => {
-      // Pass cursors directly (renderer will need to handle Object.values or Map)
-      renderCanvas(ctx, shapes, cursors, selectedId, previewShapeRef.current, window.innerWidth, window.innerHeight);
+      renderCanvas(
+        canvas.getContext('2d')!,
+        shapes,
+        cursors,
+        selectedId,
+        previewShapeRef.current,
+        window.innerWidth,
+        window.innerHeight
+      );
       rafRef.current = requestAnimationFrame(render);
     };
     rafRef.current = requestAnimationFrame(render);
     return () => cancelAnimationFrame(rafRef.current);
   }, [shapes, cursors, selectedId]);
 
+  // --- 3. Pos Helper (Float-friendly but clean) ---
   const getPos = useCallback((e: React.PointerEvent): Point => {
     const rect = canvasRef.current!.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
   }, []);
 
   const commitText = useCallback(() => {
@@ -86,23 +103,23 @@ export function WhiteboardCanvas({
         color: strokeColor,
         strokeWidth: 2,
         userId,
+        roomId,
         x: textInput.x,
         y: textInput.y,
         content,
         fontSize: 18,
-      } as any);
+      }as any);
     }
     setTextInput({ x: 0, y: 0, visible: false });
-  }, [textInput, strokeColor, userId, onAddShape]);
+  }, [textInput, strokeColor, userId, roomId, onAddShape]);
 
+  // --- 4. Pointer Event Logic ---
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    if (textInput.visible) {
-      commitText();
-      return;
-    }
-
+    if (textInput.visible) { commitText(); return; }
+    
     const pos = getPos(e);
     isDrawing.current = true;
+    pointerIdRef.current = e.pointerId;
     startPosRef.current = pos;
     canvasRef.current?.setPointerCapture(e.pointerId);
 
@@ -111,135 +128,125 @@ export function WhiteboardCanvas({
       for (let i = shapes.length - 1; i >= 0; i--) {
         if (hitTest(shapes[i], pos.x, pos.y)) {
           found = shapes[i].id;
-          const s = shapes[i];
-          const bb = getBBForDrag(s);
-            dragOffsetRef.current = { x: pos.x - bb.x, y: pos.y - bb.y };
-
+          const bb = getBBForDrag(shapes[i]);
+          dragOffsetRef.current = { x: pos.x - bb.x, y: pos.y - bb.y };
           break;
         }
       }
       setSelectedId(found);
       currentIdRef.current = found || '';
-    } else if (tool === 'eraser') {
-      for (let i = shapes.length - 1; i >= 0; i--) {
-        if (hitTest(shapes[i], pos.x, pos.y)) {
-          onDeleteShape(shapes[i].id);
-          break;
-        }
-      }
-    } else if (tool === 'text') {
+      return;
+    }
+
+    if (tool === 'eraser') {
+  // We slice() to create a copy so we don't mutate the original shapes array
+  const target = [...shapes].reverse().find(s => hitTest(s, pos.x, pos.y));
+  if (target) onDeleteShape(target.id);
+  return;
+}
+
+    if (tool === 'text') {
       setTextInput({ x: pos.x, y: pos.y, visible: true });
       isDrawing.current = false;
-      setTimeout(() => textAreaRef.current?.focus(), 50);
-    } else if (tool === 'freehand') {
-      const id = ID.unique();
-      currentIdRef.current = id;
-      previewShapeRef.current = {
-        id, type: 'freehand', color: strokeColor, strokeWidth: 2, userId,
-        points: JSON.stringify([pos.x, pos.y]),
-      };
-    } else {
-      currentIdRef.current = ID.unique();
+      return;
     }
-  }, [tool, strokeColor, shapes, getPos, userId, onDeleteShape, textInput, commitText]);
+
+    // DRAWING START
+    currentIdRef.current = crypto.randomUUID();
+    if (tool === 'freehand') {
+      previewShapeRef.current = {
+        id: currentIdRef.current,
+        type: 'freehand',
+        color: strokeColor,
+        strokeWidth: 2,
+        userId,
+        roomId,
+        points: JSON.stringify([pos.x, pos.y]),
+      } as any;
+    }
+  }, [tool, shapes, strokeColor, getPos, userId, roomId, textInput, commitText, onDeleteShape]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const pos = getPos(e);
-
+    
+    // Throttle cursor broadcast to ~30fps
     const now = Date.now();
-    if (now - throttleRef.current > 32) { // Slightly increased throttle for real-time stability
+    if (now - throttleRef.current > 32) {
       throttleRef.current = now;
       onCursorMove(pos.x, pos.y);
     }
 
     if (!isDrawing.current) return;
 
-    if (tool === 'eraser') {
-      for (let i = shapes.length - 1; i >= 0; i--) {
-        if (hitTest(shapes[i], pos.x, pos.y)) {
-          onDeleteShape(shapes[i].id);
-          break;
-        }
-      }
+    if (tool === 'select' && currentIdRef.current) {
+      const s = shapes.find(sh => sh.id === currentIdRef.current);
+      if (s) moveShape(s, pos.x - dragOffsetRef.current.x, pos.y - dragOffsetRef.current.y, onUpdateShape);
       return;
     }
 
-    if (tool === 'select' && currentIdRef.current) {
-      const s = shapes.find(sh => sh.id === currentIdRef.current);
-      if (!s) return;
-      const dx = pos.x - dragOffsetRef.current.x;
-      const dy = pos.y - dragOffsetRef.current.y;
-      moveShape(s, dx, dy, onUpdateShape);
-    } else if (tool === 'freehand' && previewShapeRef.current) {
-      const prev = previewShapeRef.current as Shape & { points: number[] };
-      prev.points = [...prev.points, pos.x, pos.y]; // Immutable update
-    } else if (tool === 'rectangle') {
-      const w = pos.x - startPosRef.current.x;
-      const h = pos.y - startPosRef.current.y;
+    if (tool === 'freehand' && previewShapeRef.current) {
+      const pts = JSON.parse((previewShapeRef.current as any).points);
       previewShapeRef.current = {
-        id: currentIdRef.current, type: 'rectangle', color: strokeColor, strokeWidth: 2, userId,
-        x: w < 0 ? pos.x : startPosRef.current.x,
-        y: h < 0 ? pos.y : startPosRef.current.y,
-        width: Math.abs(w), height: Math.abs(h),
+        ...previewShapeRef.current,
+        points: JSON.stringify([...pts, pos.x, pos.y]),
+      } as any;
+    }
+
+    if (tool === 'rectangle') {
+      const x = Math.min(pos.x, startPosRef.current.x);
+      const y = Math.min(pos.y, startPosRef.current.y);
+      const width = Math.abs(pos.x - startPosRef.current.x);
+      const height = Math.abs(pos.y - startPosRef.current.y);
+      previewShapeRef.current = {
+        id: currentIdRef.current, type: 'rectangle', color: strokeColor, strokeWidth: 2, userId, roomId, x, y, width, height
       };
-    } else if (tool === 'circle') {
+    }
+
+    if (tool === 'circle') {
       const dx = pos.x - startPosRef.current.x;
       const dy = pos.y - startPosRef.current.y;
       const radius = Math.sqrt(dx * dx + dy * dy);
       previewShapeRef.current = {
-        id: currentIdRef.current, type: 'circle', color: strokeColor, strokeWidth: 2, userId,
-        cx: startPosRef.current.x, cy: startPosRef.current.y, radius,
+        id: currentIdRef.current, type: 'circle', color: strokeColor, strokeWidth: 2, userId, roomId, cx: startPosRef.current.x, cy: startPosRef.current.y, radius
       };
     }
-  }, [tool, strokeColor, shapes, getPos, onCursorMove, onUpdateShape, userId, onDeleteShape]);
+  }, [tool, shapes, strokeColor, getPos, userId, roomId, onUpdateShape, onCursorMove]);
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
     isDrawing.current = false;
-    if (previewShapeRef.current && tool !== 'select' && tool !== 'eraser' && tool !== 'text') {
-      onAddShape(previewShapeRef.current);
+    canvasRef.current?.releasePointerCapture(e.pointerId);
+
+    if (previewShapeRef.current && !['select', 'eraser', 'text'].includes(tool)) {
+      const { id, ...shapeData } = previewShapeRef.current;
+      onAddShape({ ...shapeData, roomId });
       previewShapeRef.current = null;
     }
-  }, [tool, onAddShape]);
-
-  const handleTextKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      setTextInput({ x: 0, y: 0, visible: false });
-    } else if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      commitText();
-    }
-  }, [commitText]);
+  }, [tool, onAddShape, roomId]);
 
   return (
-    <>
+    <div className="relative w-full h-full touch-none">
       <canvas
         ref={canvasRef}
         className="absolute inset-0 bg-canvas-bg"
-        style={{ touchAction: 'none', cursor: tool === 'select' ? 'default' : 'crosshair' }}
+        style={{ cursor: tool === 'select' ? 'default' : 'crosshair' }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerUp}
       />
       {textInput.visible && (
         <textarea
           ref={textAreaRef}
-          className="absolute z-40 bg-transparent border-2 border-primary rounded-md px-2 py-1 text-foreground outline-none resize-none shadow-lg"
-          style={{
-            left: textInput.x,
-            top: textInput.y,
-            fontSize: 18,
-            fontFamily: 'inherit',
-            minWidth: 150,
-            color: strokeColor,
-          }}
-          onKeyDown={handleTextKeyDown}
+          autoFocus
+          className="absolute z-50 bg-transparent border-2 border-blue-500 rounded p-1 outline-none overflow-hidden"
+          style={{ left: textInput.x, top: textInput.y, color: strokeColor, fontSize: '18px', lineHeight: '1.3' }}
           onBlur={commitText}
           rows={1}
+          onChange={(e) => {
+            e.target.style.height = 'auto';
+            e.target.style.height = e.target.scrollHeight + 'px';
+          }}
         />
       )}
-    </>
+    </div>
   );
 }
-
-// ... helper functions (moveShape, getBBForDrag) remain same

@@ -1,9 +1,6 @@
-// Appwrite Document Type
-// Use this when fetching from the database
-import type {  Models } from 'appwrite';
+import type { Models } from 'appwrite';
 
-// whiteboard.ts
-
+// Available tools in the whiteboard
 export type Tool = 'select' | 'freehand' | 'rectangle' | 'circle' | 'eraser' | 'text';
 
 export interface Point {
@@ -11,19 +8,19 @@ export interface Point {
   y: number;
 }
 
-// Base structure for what we SEND to Appwrite
+// --- Base structure for what we SEND to Appwrite ---
 export interface BaseShape {
-  id: string; // We'll map this to Appwrite's $id
+  id: string;      // Mapped to Appwrite's $id in the hook
   type: Tool;
   color: string;
   strokeWidth: number;
   userId: string;
+  roomId: string;  // REQUIRED: To isolate drawings to specific boards
 }
 
 export interface FreehandShape extends BaseShape {
   type: 'freehand';
-  points: string; // Appwrite doesn't support nested number arrays well; 
-                  // It's better to store as a JSON string or a flat string.
+  points: string;  // Stored as JSON.stringify([x1, y1, x2, y2...])
 }
 
 export interface RectangleShape extends BaseShape {
@@ -49,16 +46,18 @@ export interface TextShape extends BaseShape {
   fontSize: number;
 }
 
+// The union type for all possible shapes
 export type Shape = FreehandShape | RectangleShape | CircleShape | TextShape;
 
-
-
+// Represents the document as it comes back from the Appwrite SDK
 export type ShapeDocument = Shape & Models.Document;
 
+// --- Presence / Cursor Data ---
 export interface CursorInfo {
   x: number;
   y: number;
-  userName: string;   // Changed from name
-  userColor: string;  // Changed from color
-  userId: string; // Added to identify whose cursor is whose
+  userName: string;
+  userColor: string;
+  userId: string;
+  roomId: string; // REQUIRED: To ensure you only see cursors in your current room
 }

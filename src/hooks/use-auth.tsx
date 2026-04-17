@@ -1,15 +1,17 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import type {  ReactNode } from 'react';
-import { account } from '@/lib/appwrite';
+import type { ReactNode } from 'react';
+import { account, databases, DATABASE_ID } from '@/lib/appwrite'; // Ensure databases is exported from your lib
 import { ID } from 'appwrite';
-import type {  Models } from 'appwrite';
+import type { Models } from 'appwrite';
 
-// Appwrite returns a User object that includes 'prefs'
+// Use the collection ID for your 'users' collection
+const USERS_COLLECTION_ID = import.meta.env.VITE_APPWRITE_USERS_COLLECTION_ID;
+
 interface AuthContextType {
   user: Models.User<Models.Preferences> | null;
   loading: boolean;
-  signUp: (email: string, password: string, displayName: string) => Promise<{ error: any }>;
-  signIn: (email: string, password: string) => Promise<{ error: any }>;
+  signUp: (email: string, password: string, displayName: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -19,7 +21,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Models.User<Models.Preferences> | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch current user session on mount
   const checkUser = useCallback(async () => {
     try {
       const currentUser = await account.get();
@@ -36,41 +37,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [checkUser]);
 
   const signUp = useCallback(async (email: string, password: string, displayName: string) => {
+    // 1. Create the account
+    const userId = ID.unique();
+    await account.create(userId, email, password, displayName);
+    
+    // 2. Log in to create a session
+    await account.createEmailPasswordSession(email, password);
+    
+    // 3. Assign a random cursor color
+    const colors = ['#3498DB', '#E74C3C', '#2ECC71', '#F1C40F', '#9B59B6', '#1ABC9C', '#E67E22'];
+    const randomColor = colors[Math.floor(Math.random() * colors.length)];
+    await account.updatePrefs({ color: randomColor });
+
+    // 4. Create a document in your custom 'users' collection
+    // This connects the Auth user to your 'users' database collection
     try {
-      // 1. Create the account
-      await account.create(ID.unique(), email, password, displayName);
-      
-      // 2. Add a random color to user preferences (replacing the separate profile table)
-      const randomColor = ['#3498DB', '#E74C3C', '#2ECC71', '#F1C40F', '#9B59B6'][Math.floor(Math.random() * 5)];
-      
-      // 3. Log them in to create a session (Appwrite needs a session to update prefs)
-      await account.createEmailPasswordSession(email, password);
-      await account.updatePrefs({ color: randomColor });
-      
-      // 4. Refresh local user state
-      const userWithPrefs = await account.get();
-      setUser(userWithPrefs);
-      
-      return { error: null };
-    } catch (error: any) {
-      return { error };
+        await databases.createDocument(
+            DATABASE_ID,
+            USERS_COLLECTION_ID,
+            userId, // Use the same ID as the Auth account for consistency
+            {
+                email: email,
+                username: displayName
+            }
+        );
+    } catch (dbError) {
+        console.error("Failed to sync user to database collection:", dbError);
     }
+    
+    // 5. Final state update
+    const userWithPrefs = await account.get();
+    setUser(userWithPrefs);
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
-    try {
-      await account.createEmailPasswordSession(email, password);
-      const currentUser = await account.get();
-      setUser(currentUser);
-      return { error: null };
-    } catch (error: any) {
-      return { error };
-    }
+    await account.createEmailPasswordSession(email, password);
+    const currentUser = await account.get();
+    setUser(currentUser);
   }, []);
 
   const signOut = useCallback(async () => {
     try {
-      // Appwrite deletes the 'current' session
       await account.deleteSession('current');
       setUser(null);
     } catch (error) {

@@ -1,32 +1,39 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { client, databases, DATABASE_ID, SHAPES_COLLECTION_ID } from '@/lib/appwrite';
 import { ID, Query } from 'appwrite';
 import type { Shape, CursorInfo } from '@/types/whiteboard';
 
+// Pulling Presence ID from env
+const PRESENCE_COLLECTION_ID = import.meta.env.VITE_APPWRITE_PRESENCE_COLLECTION_ID;
+
 interface UseAppwriteRealtimeProps {
+  roomId: string; // Crucial for collaboration isolation
   userName: string;
   userColor: string;
   userId: string;
 }
 
-export function useAppwriteRealtime({ userName, userColor, userId }: UseAppwriteRealtimeProps) {
+export function useAppwriteRealtime({ roomId, userName, userColor, userId }: UseAppwriteRealtimeProps) {
   const [shapes, setShapes] = useState<Shape[]>([]);
   const [cursors, setCursors] = useState<Record<string, CursorInfo>>({});
   const [isSynced, setIsSynced] = useState(false);
 
-  // 1. Initial Load: Fetch all shapes from the database
+  // --- 1. Initial Load: Fetch shapes ONLY for the current room ---
   useEffect(() => {
     const fetchShapes = async () => {
       try {
         const response = await databases.listDocuments(
           DATABASE_ID,
           SHAPES_COLLECTION_ID,
-          [Query.limit(100)] // Adjust limit as needed
+          [
+            Query.equal('roomId', roomId), 
+            Query.limit(100)
+          ]
         );
-        // Map Appwrite documents to our Shape type
+        
         const loadedShapes = response.documents.map((doc: any) => ({
           ...doc,
-          id: doc.$id, // Map Appwrite $id back to our generic id
+          id: doc.$id,
         })) as Shape[];
         
         setShapes(loadedShapes);
@@ -37,84 +44,167 @@ export function useAppwriteRealtime({ userName, userColor, userId }: UseAppwrite
     };
 
     fetchShapes();
-  }, []);
+  }, [roomId]);
 
-  // 2. Realtime Subscriptions: Listen for Database changes & Cursor events
+  // --- 2. Realtime Subscriptions: Filtered by Collection & Room ---
   useEffect(() => {
-    // Subscribe to both database changes and "presence" events
     const unsubscribe = client.subscribe(
       [
         `databases.${DATABASE_ID}.collections.${SHAPES_COLLECTION_ID}.documents`,
-        `channels.presence` // Custom channel for cursors
+        `databases.${DATABASE_ID}.collections.${PRESENCE_COLLECTION_ID}.documents`
       ],
       (response) => {
-        // Handle Database Events (Shapes)
-        if (response.events.includes("databases.*.collections.*.documents.*.create")) {
-          const newShape = response.payload as any;
-          if (newShape.userId !== userId) { // Don't add if we are the creator
-            setShapes((prev) => [...prev, { ...newShape, id: newShape.$id }]);
+        const payload = response.payload as any;
+
+        // --- Handle Shape Collection Events ---
+        if (response.events.some(e => e.includes(SHAPES_COLLECTION_ID))) {
+          // Verify room match so users on board A don't see board B's drawings
+          if (payload.roomId !== roomId) return;
+
+          if (response.events.some(e => e.includes(".create"))) {
+            if (payload.userId !== userId) {
+              setShapes((prev) => [...prev, { ...payload, id: payload.$id }]);
+            }
+          }
+
+          if (response.events.some(e => e.includes(".update"))) {
+            setShapes((prev) => 
+              prev.map(s => s.id === payload.$id ? { ...payload, id: payload.$id } : s)
+            );
+          }
+
+          if (response.events.some(e => e.includes(".delete"))) {
+            setShapes((prev) => prev.filter((s) => s.id !== payload.$id));
           }
         }
 
-        if (response.events.includes("databases.*.collections.*.documents.*.delete")) {
-          const deletedId = (response.payload as any).$id;
-          setShapes((prev) => prev.filter((s) => s.id !== deletedId));
-        }
+        // --- Handle Presence Collection Events (Cursors) ---
+        if (response.events.some(e => e.includes(PRESENCE_COLLECTION_ID))) {
+          // If the cursor update is for this room
+          if (payload.roomId === roomId && payload.userId !== userId) {
+            if (response.events.some(e => e.includes(".create") || e.includes(".update"))) {
+              setCursors((prev) => ({
+                ...prev,
+                [payload.userId]: {
+                  x: payload.x,
+                  y: payload.y,
+                  userName: payload.userName,
+                  userColor: payload.userColor,
+                  userId: payload.userId
+                },
+              }));
+            }
+          }
 
-        // Handle Custom Cursor Events
-        if (response.events.includes("channels.presence.broadcast")) {
-          const cursorData = response.payload as CursorInfo;
-          if (cursorData.userId !== userId) {
-            setCursors((prev) => ({
-              ...prev,
-              [cursorData.userId]: cursorData,
-            }));
+          // If a user leaves the app or closes the tab (document deleted)
+          if (response.events.some(e => e.includes(".delete"))) {
+            setCursors((prev) => {
+              const newCursors = { ...prev };
+              // We assume the document ID in Presence is the userId
+              delete newCursors[payload.$id]; 
+              return newCursors;
+            });
           }
         }
       }
     );
 
-    return () => unsubscribe();
-  }, [userId]);
+    return () => {
+      unsubscribe();
+      // Clean up presence when user unmounts/leaves
+      databases.deleteDocument(DATABASE_ID, PRESENCE_COLLECTION_ID, userId).catch(() => {});
+    };
+  }, [roomId, userId]);
 
-  // 3. Actions: Methods for the UI to call
+  // --- 3. Actions: Methods for the UI to call ---
+
   const addShape = async (shape: Omit<Shape, 'id'>) => {
     try {
-      // Optimistic UI update: Add locally first for zero lag
       const tempId = ID.unique();
-      const newShape = { ...shape, id: tempId } as Shape;
-      setShapes((prev) => [...prev, newShape]);
+      
+      // 1. Start with the base data
+      // We cast to 'any' to allow dynamic property assignment for the DB document
+      const shapeData: any = {
+        ...shape,
+        roomId,
+        userId,
+      };
 
+      // 2. Explicitly round based on the shape type
+      // We cast the property to 'number' to satisfy the Math.round argument requirement
+      if ('x' in shape) {
+        shapeData.x = Math.round((shape as any).x || 0);
+      }
+      if ('y' in shape) {
+        shapeData.y = Math.round((shape as any).y || 0);
+      }
+      if ('width' in shape) {
+        shapeData.width = Math.round((shape as any).width || 0);
+      }
+      if ('height' in shape) {
+        shapeData.height = Math.round((shape as any).height || 0);
+      }
+      if ('cx' in shape) {
+        shapeData.cx = Math.round((shape as any).cx || 0);
+      }
+      if ('cy' in shape) {
+        shapeData.cy = Math.round((shape as any).cy || 0);
+      }
+      if ('radius' in shape) {
+        shapeData.radius = Math.round((shape as any).radius || 0);
+      }
+
+      // 3. Optimistic UI update
+      setShapes((prev) => [...prev, { ...shapeData, id: tempId } as Shape]);
+
+      // 4. Send to Appwrite
       await databases.createDocument(
         DATABASE_ID,
         SHAPES_COLLECTION_ID,
         tempId,
-        shape
+        shapeData
       );
     } catch (error) {
       console.error('Failed to save shape:', error);
-      // Optional: Rollback local state on failure
     }
   };
 
   const broadcastCursor = async (x: number, y: number) => {
+  if (!userId || userId === 'anonymous') return;
+
+  const cursorData = {
+    x,
+    y,
+    userName,
+    userColor,
+    roomId,
+    userId,
+  };
+
   try {
-    // We use the userId as the document ID so it's a simple overwrite
+    // 1. Try to update the existing document for this user
     await databases.updateDocument(
       DATABASE_ID,
-      import.meta.env.VITE_APPWRITE_PRESENCE_COLLECTION_ID,
-      userId, 
-      { x, y, userName, userColor }
+      PRESENCE_COLLECTION_ID,
+      userId, // We use userId as the document ID
+      cursorData
     );
   } catch (error: any) {
-    // If the document doesn't exist yet (first move), create it
+    // 2. If error code is 404, the document doesn't exist yet, so create it
     if (error.code === 404) {
-      await databases.createDocument(
-        DATABASE_ID,
-        import.meta.env.VITE_APPWRITE_PRESENCE_COLLECTION_ID,
-        userId,
-        { x, y, userName, userColor }
-      );
+      try {
+        await databases.createDocument(
+          DATABASE_ID,
+          PRESENCE_COLLECTION_ID,
+          userId, // Set the document ID to the userId
+          cursorData
+        );
+      } catch (createError) {
+        // Ignore "already exists" errors here in case of race conditions
+        console.error("Error creating cursor:", createError);
+      }
+    } else {
+      console.error("Error updating cursor:", error);
     }
   }
 };
@@ -128,13 +218,30 @@ export function useAppwriteRealtime({ userName, userColor, userId }: UseAppwrite
     }
   };
 
+  const updateShape = async (id: string, updates: Partial<Shape>) => {
+    try {
+      // Round any incoming numerical updates
+      const sanitizedUpdates: any = { ...updates };
+      ['x', 'y', 'width', 'height', 'radius', 'cx', 'cy'].forEach(key => {
+        if (typeof sanitizedUpdates[key] === 'number') {
+          sanitizedUpdates[key] = Math.round(sanitizedUpdates[key]);
+        }
+      });
+
+      setShapes((prev) => prev.map(s => s.id === id ? { ...s, ...sanitizedUpdates } : s));
+      await databases.updateDocument(DATABASE_ID, SHAPES_COLLECTION_ID, id, sanitizedUpdates);
+    } catch (error) {
+      console.error('Failed to update shape:', error);
+    }
+  };
+
   return {
     shapes,
     cursors,
     addShape,
     deleteShape,
+    updateShape,
     broadcastCursor,
     isSynced,
-    updateShape: () => {}, // Implement update logic if needed
   };
 }

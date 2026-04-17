@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Tool } from '@/types/whiteboard';
-import { useAppwriteRealtime } from '@/hooks/use-appwrite-realtime'; // New Hook
+import { useAppwriteRealtime } from '@/hooks/use-appwrite-realtime'; 
 import { useAuth } from '@/hooks/use-auth';
 import { WhiteboardCanvas } from './WhiteboardCanvas';
 import { Toolbar } from './Toolbar';
@@ -11,14 +11,14 @@ export function Whiteboard() {
   const [tool, setTool] = useState<Tool>('freehand');
   const [strokeColor, setStrokeColor] = useState('#1e1e1e');
 
-  // Appwrite uses 'name' and '$id' instead of 'display_name' and 'id'
+  // This should ideally come from a URL param like /board/:id
+  const currentRoomId = "global-collaboration-space";
+
   const userName = user?.name || user?.email.split('@')[0] || 'Anonymous';
   
-  // We can store a preferred color in Appwrite's user preferences or a metadata field
-  // Treat prefs as a Record so you can access the 'color' key
-const userColor = (user?.prefs as Record<string, any>).color || '#3498DB';
+  // Safe cast for user preferences
+  const userColor = (user?.prefs as Record<string, any>)?.color || '#3498DB';
 
-  // This hook will now handle Appwrite Databases + Realtime subscriptions
   const { 
     shapes, 
     cursors, 
@@ -28,6 +28,7 @@ const userColor = (user?.prefs as Record<string, any>).color || '#3498DB';
     broadcastCursor,
     isSynced 
   } = useAppwriteRealtime({
+    roomId: currentRoomId,
     userName,
     userColor,
     userId: user?.$id || 'anonymous',
@@ -49,6 +50,7 @@ const userColor = (user?.prefs as Record<string, any>).color || '#3498DB';
         shapes={shapes}
         cursors={cursors}
         userId={user?.$id || 'anonymous'}
+        roomId={currentRoomId} // FIXED: Added this prop so drawings are room-aware
         onAddShape={addShape}
         onUpdateShape={updateShape}
         onDeleteShape={deleteShape}
@@ -57,7 +59,8 @@ const userColor = (user?.prefs as Record<string, any>).color || '#3498DB';
 
       <StatusBar
         shapeCount={shapes.length}
-        peerCount={Object.keys(cursors).length} // Appwrite Realtime usually returns an object for presence
+        // peerCount tracks other cursors + you
+        peerCount={Object.keys(cursors).length + 1} 
         userName={userName}
         userColor={userColor}
         isSynced={isSynced}

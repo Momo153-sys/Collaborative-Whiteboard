@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type {  FormEvent } from 'react';
+import type { FormEvent } from 'react';
 import { useAuth } from '@/hooks/use-auth';
 
 export function AuthPage() {
@@ -10,7 +10,6 @@ export function AuthPage() {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [confirmSent, setConfirmSent] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -19,49 +18,27 @@ export function AuthPage() {
 
     try {
       if (isSignUp) {
-        // Appwrite signUp usually creates the account
+        // Creates account AND should trigger session in your hook
         await signUp(email, password, displayName);
-        
-        // Note: Appwrite doesn't always require email confirmation 
-        // unless you explicitly trigger it with account.createVerification.
-        // For now, we'll assume you want the confirmation flow.
-        setConfirmSent(true);
       } else {
         await signIn(email, password);
-        // On success, the useAuth hook should handle the redirect
       }
+      // Success: useAuth should handle navigation to /whiteboard via useEffect or redirect
     } catch (err: any) {
-      // Appwrite errors are thrown, not returned as an object
-      setError(err.message || 'An unexpected error occurred');
+      // Appwrite specific error handling
+      if (err.code === 401) {
+        setError('Invalid email or password. Please try again.');
+      } else if (err.code === 409) {
+        setError('An account with this email already exists.');
+      } else if (err.code === 400) {
+        setError('Password must be at least 8 characters long.');
+      } else {
+        setError(err.message || 'Something went wrong. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
   };
-
-  if (confirmSent) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-canvas-bg">
-        <div className="w-full max-w-sm rounded-xl bg-toolbar-bg p-8 shadow-lg text-center">
-          <div className="flex justify-center mb-4 text-tool-active">
-            {/* Success Icon Placeholder */}
-            <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-semibold text-foreground mb-2">Check your email</h2>
-          <p className="text-sm text-muted-foreground">
-            We sent a confirmation link to <strong>{email}</strong>. Click the link to activate your account.
-          </p>
-          <button
-            onClick={() => { setConfirmSent(false); setIsSignUp(false); }}
-            className="mt-6 w-full rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Back to sign in
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas-bg px-4">
@@ -85,7 +62,7 @@ export function AuthPage() {
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 required
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-tool-active transition-all"
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-tool-active outline-none transition-all"
               />
             </div>
           )}
@@ -98,7 +75,7 @@ export function AuthPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-tool-active transition-all"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-tool-active outline-none transition-all"
             />
           </div>
 
@@ -111,13 +88,13 @@ export function AuthPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-tool-active transition-all"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-tool-active outline-none transition-all"
             />
           </div>
 
           {error && (
-            <div className="p-2.5 rounded-md bg-destructive/10 border border-destructive/20">
-              <p className="text-[11px] text-destructive leading-tight">{error}</p>
+            <div className="p-3 rounded-md bg-destructive/15 border border-destructive/20 animate-in fade-in zoom-in duration-200">
+              <p className="text-xs text-destructive font-medium text-center">{error}</p>
             </div>
           )}
 
@@ -132,10 +109,10 @@ export function AuthPage() {
 
         <div className="mt-8 pt-6 border-t border-border/50 text-center">
           <p className="text-xs text-muted-foreground">
-            {isSignUp ? 'Already using our whiteboard?' : "New to the platform?"}{' '}
+            {isSignUp ? 'Already have an account?' : "New to the platform?"}{' '}
             <button
               onClick={() => { setIsSignUp(!isSignUp); setError(''); }}
-              className="font-semibold text-tool-active hover:text-tool-active/80 transition-colors"
+              className="font-semibold text-tool-active hover:underline transition-all"
             >
               {isSignUp ? 'Sign in here' : 'Create an account'}
             </button>
