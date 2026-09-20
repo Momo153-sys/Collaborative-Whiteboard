@@ -61,7 +61,6 @@
   "devDependencies": {
     "@content-collections/core": "^0.13.1",
     "@content-collections/vite": "^0.2.8",
-    "@netlify/vite-plugin-tanstack-start": "^1.2.15",
     "@tailwindcss/typography": "^0.5.16",
     "@tanstack/devtools-vite": "latest",
     "@tanstack/eslint-config": "latest",
